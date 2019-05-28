@@ -1,15 +1,21 @@
 define(
     [
     'backbone',
+    'underscore',
     'proactive/model/SchemaModel',
     'proactive/model/ScriptExecutable',
     'proactive/model/NativeExecutable',
     'proactive/model/JavaExecutable',
     'proactive/model/ForkEnvironment',
-    'proactive/model/Script',
-    'proactive/model/SelectionScript',
-    'proactive/model/BranchWithScript',
+    'proactive/model/script/Script',
+    'proactive/model/script/SelectionScript',
+    'proactive/model/script/ForkEnvironmentScript',
+    'proactive/model/script/PreScript',
+    'proactive/model/script/PostScript',
+    'proactive/model/script/FlowScript',
+    'proactive/model/script/CleanScript',
     'proactive/view/utils/undo',
+    'text!proactive/templates/submodel-radio-form-template.html',
     'text!proactive/templates/selection-script-host-template.html',
     'text!proactive/templates/selection-script-os-template.html',
     'text!proactive/templates/selection-script-totalmem-template.html',
@@ -19,8 +25,9 @@ define(
     ],
 
      // TODO REMOVE undoManager dependency - comes from view
-     function (Backbone, SchemaModel, ScriptExecutable, NativeExecutable, JavaExecutable, ForkEnvironment, Script, SelectionScript,
-             BranchWithScript, undoManager, ssHostTemplate, ssOSTemplate, ssTotalMemTemplate, Utils, config, StudioClient) {
+     function (Backbone, _, SchemaModel, ScriptExecutable, NativeExecutable, JavaExecutable, ForkEnvironment, Script, SelectionScript, ForkEnvironmentScript,
+            PreScript, PostScript, FlowScript, CleanScript,
+            undoManager, radioFormTemplate, ssHostTemplate, ssOSTemplate, ssTotalMemTemplate, Utils, config, StudioClient) {
 
         "use strict";
 
@@ -62,9 +69,9 @@ define(
                     itemToString: Utils.inlineNameValueInherited, itemTemplate: Utils.bigCrossTemplate,
                     subSchema: {
                     "Name": { validators: ['required'], fieldAttrs: {'placeholder': '@attributes->name'}, title: 'Name', type: 'Text', editorClass: 'popup-input-text-field' },
-                    "Value": { fieldAttrs: {'placeholder': '@attributes->value'}, title: 'Value', type: 'Text', editorClass: 'popup-input-text-field' },
+                    "Value": { fieldAttrs: {'placeholder': '@attributes->value'}, title: 'Value', type: 'TextArea', editorClass: 'popup-input-text-field textareavalues', editorAttrs: {'rows': '1'} },
                     "Inherited": { fieldAttrs: {'placeholder': '@attributes->inherited'}, title: 'Inherited: job value will be used', type: 'Checkbox' },
-                    "Model": { fieldAttrs: {'placeholder': '@attributes->model'}, title: '<br>Model or Data Type (PA:Integer, PA:Boolean, ...)<br>see <a target="_blank" href="' + config.docUrl +'/user/ProActiveUserGuide.html#_variable_model">documentation</a>.', type: 'Text', editorClass: 'popup-input-text-field' }
+                    "Model": { fieldAttrs: {'placeholder': '@attributes->model'}, title: '<br>Model or Data Type (PA:Integer, PA:Boolean, ...)<br>see <a target="_blank" href="' + config.docUrl +'/user/ProActiveUserGuide.html#_variable_model">documentation</a>.', type: 'TextArea', editorClass: 'popup-input-text-field textareavalues', editorAttrs: {'rows': '1'} }
                     },
                     confirmDelete: 'You are about to remove a variable.'
                 },
@@ -82,8 +89,11 @@ define(
                             fieldAttrs: {'placeholder': '@attributes->name'}
                         },
                         "Property Value": {
+                            type: 'TextArea',
                             validators: ['required'],
-                            fieldAttrs: {'placeholder': '@attributes->value'}
+                            fieldAttrs: {'placeholder': '@attributes->value'},
+                            editorClass: 'textareavalues',
+                            editorAttrs: {'rows': '1'}
                         }
                     },
                     confirmDelete: 'You are about to remove a property.'
@@ -94,6 +104,13 @@ define(
                         'placeholder': '@attributes->runAsMe',
                         "data-help": 'Executes the task under your system account.'
                     }
+                },
+                "Task Result Added to Job Result": {
+                                    type: "Checkbox",
+                                    fieldAttrs: {
+                                        'placeholder': '@attributes->preciousResult',
+                                        "data-help": 'Indicates if you want to save the result of this task in the job result.'
+                                    }
                 },
                 "Input Files": {
                     type: 'List',
@@ -135,13 +152,6 @@ define(
                     itemTemplate: Utils.bigCrossTemplate,
                     confirmDelete: 'You are about to remove an output file.'
                 },
-                "Precious Result": {
-                    type: "Checkbox",
-                    fieldAttrs: {
-                        'placeholder': '@attributes->preciousResult',
-                        "data-help": 'Indicates if you want to save the result of this task in the job result.'
-                    }
-                },
                 "Store Task Logs in a File": {
                     type: "Checkbox",
                     fieldAttrs: {
@@ -181,7 +191,7 @@ define(
                         "simple-view": true
                     }
                 },
-                "Number of Automatic Restarts": {
+                "Number of Execution Attempts": {
                     type: 'Number',
                     fieldAttrs: {
                         "data-tab": "Error Management",
@@ -219,45 +229,75 @@ define(
                     },
                     options: ["anywhere", "elsewhere"]
                 },
+                // Type is a radio button which can select an active NestedModel
+                // The options values match each one nested model defined in this schema
+                // the placeholder defines which xml structure triggers one nested model or the other
                 "Type": {
                     type: 'TaskTypeRadioEditor',
                     fieldAttrs: {
                         "data-help": '<b>Script Task</b>, a script written in Groovy, Ruby, Python and other languages supported by the JSR-223.<br/><b>Native Task</b>, an executable with eventual parameters to be executed.<br/><b>Java Task</b>, a task written in Java extending the Scheduler API.',
                         "data-tab": "Task Implementation",
-                        'data-tab-help': 'Implementation of the task (script, executable or java class extending the Scheduler API)'
+                        'data-tab-help': 'Implementation of the task (script, executable or java class extending the Scheduler API)',
+                        'placeholder': 'scriptExecutable|nativeExecutable|javaExecutable'
                     },
                     fieldClass: 'task-type',
                     options: [
-                              {val: "ScriptExecutable", label: "Code"},
+                              {val: "ScriptExecutable", label: "Script"},
                               {val: "NativeExecutable", label: "Native"},
                               {val: "JavaExecutable", label: "Java"}
                               ]
                 },
-                "Execute": {type: 'NestedModel', model: ScriptExecutable, title: ""},
+                "ScriptExecutable": {
+                    type: 'NestedModel',
+                    model: ScriptExecutable,
+                    template: _.template("<% var selectedRadioType = 'Type'; %>" + radioFormTemplate),
+                    fieldAttrs: {
+                        'placeholder': 'scriptExecutable'
+                    },
+                    title: ""
+                },
+                "NativeExecutable": {
+                    type: 'NestedModel',
+                    model: NativeExecutable,
+                    template: _.template("<% var selectedRadioType = 'Type'; %>" + radioFormTemplate),
+                    fieldAttrs: {
+                        'placeholder': 'nativeExecutable'
+                    },
+                    title: ""
+                },
+                "JavaExecutable": {
+                    type: 'NestedModel',
+                    model: JavaExecutable,
+                    template: _.template("<% var selectedRadioType = 'Type'; %>" + radioFormTemplate),
+                    fieldAttrs: {
+                        'placeholder': 'javaExecutable'
+                    },
+                    title: ""
+                },
                 "Pre Script": {
                     type: 'NestedModel',
-                    model: Script,
+                    model: PreScript,
                     fieldAttrs: {
                         "data-tab": "Pre/Post/Clean scripts",
                         'data-tab-help': 'Scripts executed before and after the task',
-                        'placeholder': 'pre->script',
-                        "data-help": 'A script that is executed on computing node before executing the task. A script can be saved into a library when you are logged in.'
+                        'placeholder': 'pre',
+                        "data-help": 'A script that is executed on the computing node before executing the task.'
                     }
                 },
                 "Post Script": {
                     type: 'NestedModel',
-                    model: Script,
+                    model: PostScript,
                     fieldAttrs: {
-                        'placeholder': 'post->script',
-                        "data-help": 'A script that is executed on computing node after the task execution (if task is finished correctly). A script can be saved into a library when you are logged in.'
+                        'placeholder': 'post',
+                        "data-help": 'A script that is executed on the computing node after the task execution (if the task is finished correctly).'
                     }
                 },
                 "Clean Script": {
                     type: 'NestedModel',
-                    model: Script,
+                    model: CleanScript,
                     fieldAttrs: {
-                        'placeholder': 'cleaning->script',
-                        "data-help": 'A script that is executed on computing node after the task execution even if task failed. A script can be saved into a library when you are logged in.'
+                        'placeholder': 'cleaning',
+                        "data-help": 'A script that is executed on the computing node after the task execution even if the task failed.'
                     }
                 },
                 "Number of Nodes": {
@@ -302,7 +342,7 @@ define(
                     itemTemplate: Utils.bigCrossTemplate,
                     fieldAttrs: {
                         "data-tab": "Node Selection",
-                        'placeholder': 'selection->script',
+                        'placeholder': 'selection',
                         "data-help": 'A node selection provides an ability for the scheduler to execute tasks on particular ProActive nodes. E.g. you can specify that a task must be executed on a Unix/Linux system.'
                     },
                     confirmDelete: 'You are about to remove a Selection script.'
@@ -348,7 +388,19 @@ define(
                         "placeholder": "controlFlow->@attributes->block",
                         "data-help": "Task blocks are defined by pairs of start and end tags.<br/>The role of task blocks is to restrain the expressiveness of the system so that a workflow can be statically checked and validated."
                     }
-                }
+                },
+                "PositionTop": {
+                    type: "Hidden",
+                    fieldAttrs: {
+                        "placeholder": "metadata->positionTop->#text"
+                    }
+                },
+                 "PositionLeft": {
+                     type: "Hidden",
+                     fieldAttrs: {
+                         "placeholder": "metadata->positionLeft->#text"
+                     }
+                 }
             },
 
             initialize: function () {
@@ -362,7 +414,7 @@ define(
                   "Generic Info": new Array()
                 });
                 this.set({"Type": "ScriptExecutable"});
-                this.set({"Execute": new ScriptExecutable()});
+                this.set({"ScriptExecutable": new ScriptExecutable()});
                 this.set({"Fork Environment": new ForkEnvironment()});
                 this.set({"Task Name": "Task" + (++Task.counter)});
                 this.set({"Maximum Number of Execution Attempts": ""});
@@ -389,11 +441,14 @@ define(
                                         message: "<br><br>" + validationData.errorMessage
                                     };
                                     return err;
+                                } else {
+                                    delete that.attributes.BackupVariables;
                                 }
                             }
                         }
                     }
-                ]
+                ];
+
 
                 this.controlFlow = {};
 
@@ -512,17 +567,27 @@ define(
                     variable.Value = "";
                 }
                 if (this.attributes.hasOwnProperty('Variables')) {
-                    var variables = this.attributes.Variables;
+                    var variables;
+                    // we save the original Variables attribute in BackupVariables, and use this afterwards
+                    // This way, any modification will only be applied to the original Variables object
+                    // This prevents piling up modifications in the variable list
+                    if (this.attributes.hasOwnProperty('BackupVariables')) {
+                      this.attributes.Variables = JSON.parse(JSON.stringify(this.attributes.BackupVariables));
+                    } else {
+                      this.attributes.BackupVariables = JSON.parse(JSON.stringify(this.attributes.Variables));
+                    }
+                    variables = this.attributes.Variables;
                     var index = -1
                     for (var i = 0; i < variables.length; i++) {
                         if (variables[i].Name == variable.Name) {
                             index = i;
+                            break;
                         }
                     }
                     if (index == -1) {
-                        this.attributes.Variables.push(variable)
+                        variables.push(variable)
                     } else {
-                        this.attributes.Variables[index] = variable
+                        variables[index] = variable
                     }
                 } else {
                     this.attributes.Variables = [variable];
@@ -562,7 +627,7 @@ define(
                 }
 
                 this.controlFlow['if'].task = task;
-                this.controlFlow['if'].model = new BranchWithScript();
+                this.controlFlow['if'].model = new FlowScript();
                 console.log('Adding if branch', this.controlFlow['if'], 'to', this)
             },
             setelse: function (task) {
@@ -597,7 +662,7 @@ define(
             setloop: function (task) {
                 console.log('Adding loop')
                 this.set({'Control Flow': 'loop'});
-                this.controlFlow = {'loop': {task: task, model: new BranchWithScript()}}
+                this.controlFlow = {'loop': {task: task, model: new FlowScript()}}
             },
             removeloop: function (controlFlow, task) {
                 console.log('Removing loop')
@@ -608,7 +673,7 @@ define(
                 console.log('Adding replicate')
                 if (!this.controlFlow['replicate']) { // keep existing script if it is already defined
                     this.set({'Control Flow': 'replicate'});
-                    this.controlFlow = {'replicate': {model: new BranchWithScript()}}
+                    this.controlFlow = {'replicate': {model: new FlowScript()}}
                 }
             },
             removereplicate: function (controlFlow, task) {
@@ -620,7 +685,7 @@ define(
             getBasicFields: function () {
                 return [
                         "Task Name",
-                        "Execute",
+                        "Type",
                         "Host Name",
                         "Operating System",
                         "Required amount of memory (in mb)",

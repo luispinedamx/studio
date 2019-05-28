@@ -2,7 +2,6 @@ exports.command = function (xpathCheck) {
     var self = this;
     
     this
-        .toggleMenu()
         .openDropdown('#file-dropdown')
     	.moveToElement('#export-button', 0, 250)
     	.click('#export-button')
@@ -16,7 +15,7 @@ exports.command = function (xpathCheck) {
                 var xpath = require('xpath');
                 var dom = require('xmldom').DOMParser;
 
-                var select = xpath.useNamespaces({"p": "urn:proactive:jobdescriptor:3.10"});
+                var select = xpath.useNamespaces({"p": "urn:proactive:jobdescriptor:3.11"});
 
                 var jobXmlDocument = new dom().parseFromString(jobXml);
 

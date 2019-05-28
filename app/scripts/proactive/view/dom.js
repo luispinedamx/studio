@@ -8,6 +8,7 @@ define(
         'xml2json',
         'codemirror',
         'text!proactive/templates/job-variable-template.html',
+        'proactive/view/BeautifiedModalAdapter',
         'pnotify',
         'pnotify.buttons',
         'codemirror/mode/shell/shell',
@@ -20,6 +21,8 @@ define(
         'codemirror/mode/powershell/powershell',
         'codemirror/mode/r/r',
         'codemirror/mode/yaml/yaml',
+        'codemirror/addon/mode/simple',
+        'codemirror/mode/dockerfile/dockerfile',
         'codemirror/addon/comment/comment',
         'codemirror/addon/edit/matchbrackets',
         'codemirror/addon/edit/closebrackets',
@@ -48,20 +51,27 @@ define(
         'filesaver'
     ],
 
-    function ($, Backbone, config, undoManager, StudioClient, xml2json, CodeMirror, jobVariablesTemplate, PNotify) {
+    function ($, Backbone, config, undoManager, StudioClient, xml2json, CodeMirror, jobVariablesTemplate, BeautifiedModalAdapter, PNotify) {
 
         "use strict";
 
-        Backbone.Form.editors.List.Modal.ModalAdapter = Backbone.BootstrapModal;
+        Backbone.Form.editors.List.Modal.ModalAdapter = BeautifiedModalAdapter;
 
         Backbone.Form.editors.TaskTypeRadioEditor = Backbone.Form.editors.Radio.extend({
-            /** A simple override to add a class to the label */
+            /** An override which adds onclick handlers to display or hide nested forms, based on the current radio selection. It also adds a custom class to the label */
             _arrayToHtml: function (array) {
                 var html = [];
                 var self = this;
+                var thatArray = array;
 
                 _.each(array, function (option, index) {
-                    var itemHtml = '<li>';
+                    var itemHtml = '<li';
+                    if (_.isObject(option) && option.val) {
+                        itemHtml += ' onclick=\'';
+                        itemHtml += self._generateHandler.call(self, thatArray, option, index);
+                        itemHtml += '\'';
+                    }
+                    itemHtml += '>';
                     if (_.isObject(option)) {
                         var val = (option.val || option.val === 0) ? option.val : '';
                         itemHtml += ('<input type="radio" name="' + self.getName() + '" value="' + val + '" id="' + self.id + '-' + index + '" />');
@@ -76,13 +86,33 @@ define(
                 });
 
                 return html.join('');
+            },
+
+            _generateHandler(array, option, index) {
+                var handler = "";
+                var self = this;
+                _.each(array, function (other_option, other_index) {
+                    // find the backbone-forms generated id associated with this form
+                    var root_id = self.id.substring(0, self.id.lastIndexOf("_"));
+                    // find the sibling nested form which must have the same name as the option value, with a _Div suffix
+                    var associatedFormId = root_id + ( root_id.length > 0 ? '_' : '') + other_option.val + "_Div";
+                    if (other_index == index) {
+                       // set the corresponding nested form as visible
+                    handler += 'document.getElementById("' + associatedFormId + '").classList.add("displayed");document.getElementById("' + associatedFormId + '").classList.remove("hidden");';
+                    } else {
+                    // hide all other nested forms
+                    handler += 'document.getElementById("' + associatedFormId + '").classList.remove("displayed");document.getElementById("' + associatedFormId + '").classList.add("hidden");';
+                    }
+                });
+                return handler;
             }
         });
+
 
         Backbone.Form.editors.Text.prototype.setValue = function(value) {
             this.previousValue = value;
             this.$el.val(value);
-        }
+        };
 
         function closeCollapsedMenu() {
             $('.navbar-collapse.in').collapse('hide');
@@ -90,12 +120,12 @@ define(
 
         $("#import-button").click(function (event) {
             add_or_import(event, '#import-file');
-        })
+        });
 
         $("#add-button").click(function (event) {
             add_or_import(event, '#add-file');
-        })
-        
+        });
+
         function add_or_import(event, buttonSelector){
             event.preventDefault();
             var studioApp = require('StudioApp');
@@ -112,12 +142,12 @@ define(
             import_file(env, true);
             PNotify.removeAll();
 
-        })
+        });
 
         $('#add-file').change(function (env) {
             import_file(env, false);
-        })
-        
+        });
+
         function import_file(env, clearFirst){
             var studioApp = require('StudioApp');
             if (clearFirst){
@@ -163,21 +193,21 @@ define(
             $('#xml-view-modal').modal();
         })
 
-        $("#get-from-catalog-button").click(function (event) {
+        $("#get-from-catalog-button, #get-from-catalog-button-tool").click(function (event) {
             event.preventDefault();
             var studioApp = require('StudioApp');
-            studioApp.models.catalogBuckets.fetch({reset: true, async: false});
-            studioApp.modelsToRemove = [];
+            studioApp.views.catalogGetView.setKind("workflow/standard", "Workflow");
             studioApp.views.catalogGetView.render();
             $('#catalog-get-modal').modal();
         });
 
-        $("#publish-to-catalog-button").click(function (event) {
+        $("#publish-to-catalog-button, #publish-to-catalog-button-tool").click(function (event) {
             event.preventDefault();
             var studioApp = require('StudioApp');
             if (studioApp.isWorkflowOpen()){
-                studioApp.models.catalogBuckets.fetch({reset: true, async: false});
-                studioApp.modelsToRemove = [];
+                save_workflow();
+                studioApp.views.catalogPublishView.setKind("workflow/standard", "Workflow");
+                studioApp.views.catalogPublishView.setContentToPublish(studioApp.views.xmlView.generateXml());
                 studioApp.views.catalogPublishView.render();
                 $('#catalog-publish-modal').modal();
             }else{
@@ -185,28 +215,31 @@ define(
             }
         });
 
-        function openSetTemplatesMenuModal(order){
+        function openAddPaletteBucketMenuModal(){
             var studioApp = require('StudioApp');
             if (studioApp.isWorkflowOpen()){
+                studioApp.models.catalogBuckets.setKind("workflow");
                 studioApp.models.catalogBuckets.fetch({reset: true, async: false});
-                studioApp.modelsToRemove = [];
-                if (order=='main')
-                    studioApp.views.catalogSetMainTemplatesBucketView.render();
-                else if (order=='secondary')
-                    studioApp.views.catalogSetSecondaryTemplatesBucketView.render();
-                $('#set-templates-'+order+'-bucket-modal').modal();
+                studioApp.views.catalogSetSecondaryTemplatesBucketView.render();
+                $('#set-templates-secondary-bucket-modal').modal();
             }else{
                 $('#open-a-workflow-modal').modal();
             }
         }
-        $("#set-templates-main-bucket-button").click(function (event) {
-            event.preventDefault();
-            openSetTemplatesMenuModal('main');
-        });
+
+        function openSetPresetModal(){
+            var studioApp = require('StudioApp');
+            if (studioApp.isWorkflowOpen()){
+                studioApp.views.setPresetView.render();
+                $('#set-preset-modal').modal();
+            }else{
+                $('#open-a-workflow-modal').modal();
+            }
+        }
 
         $("#set-templates-secondary-bucket-button").click(function (event) {
             event.preventDefault();
-            openSetTemplatesMenuModal('secondary');
+            openAddPaletteBucketMenuModal();
         });
 
         $("#catalog-get-as-new-button").click(function (event) {
@@ -216,7 +249,11 @@ define(
         $("#catalog-get-append-button").click(function (event) {
             workflowImport(event, '#add-workflow-confirmation-modal');
         });
-        
+
+        $("#catalog-get-import-button").click(function (event) {
+            $('#import-catalog-object-confirmation-modal').modal();
+        });
+
         function workflowImport(e, modalSelector) {
             var studioApp = require('StudioApp');
             var url = $("#catalog-get-revision-description").data("selectedrawurl");
@@ -237,7 +274,7 @@ define(
             }).success(function (response) {
                 successCallback(response);
             }).error(function (response) {
-                notify_message('Error', 'Error importing selected Workflow: ' + JSON.stringify(response), false);
+                StudioClient.alert('Error', 'Error importing selected Workflow: ' + JSON.stringify(response), 'error');
             });
         }
 
@@ -253,13 +290,72 @@ define(
 
         $("#set-templates-secondary-bucket-select-button").click(function () {
             var bucketName = ($(($("#catalog-set-templates-secondary-bucket-table .catalog-selected-row"))[0])).text();
-            require('StudioApp').views.palleteView.setSecondaryTemplatesBucket(bucketName, false);
+            // Leave modal open if bucket could not be added (normally because it's already in the Palette)
+            if (require('StudioApp').views.paletteView.addPaletteBucketMenu(bucketName, false)){
+                $('#set-templates-secondary-bucket-modal').modal('hide');
+            }
         });
+
+        // Set default preset on startup
+        if (!localStorage['palettePreset']){
+            localStorage.setItem('palettePreset',config.default_preset);
+        }
+
+        $("#set-preset-button").click(function (event) {
+            event.preventDefault();
+            openSetPresetModal();
+        });
+
+        $("#set-preset-select-button").click(function () {
+            var presetName = ($(($("#presets-set-preset-table .preset-selected-row"))[0])).text();
+            var selectedIndex = config.palette_presets.findIndex(function(obj) {return obj.name==presetName});
+            require('StudioApp').views.paletteView.render(selectedIndex, true);
+        });
+
+        $("#studio-bucket-title").on( 'click', '#preset-title > #presets-list > li > a', function () {
+            var presetName = $(this).text();
+            console.log("ul pressed");
+
+            var selectedIndex = config.palette_presets.findIndex(function(obj) {return obj.name==presetName});
+            require('StudioApp').views.paletteView.render(selectedIndex, true);
+        });
+
+        window.onresize = updateDimensions;
+
+        window.onload = updateDimensions;
+
+        function updateDimensions() {
+
+            var windowWidth = document.documentElement.clientWidth;
+            var right = document.getElementById('ae-logo').offsetWidth;
+            var left = document.getElementById('shortcuts-toolbar').offsetWidth;
+            var container = document.getElementById('preset-caret').offsetWidth; //20 is the left/right padding value of the container
+
+            var presetTitle = document.getElementById('preset-title-text');
+            var oldWidth = presetTitle.offsetWidth;
+            var availableWidth = windowWidth - (right + left + container);
+
+            if (windowWidth == 1200) {
+                presetTitle.style.width = '31px';
+            } else if (oldWidth >= availableWidth || availableWidth > 10) {
+                presetTitle.style.width = (availableWidth-20) + 'px';
+            }
+        }
 
         $("#layout-button").click(function (event) {
             event.preventDefault();
             require('StudioApp').views.workflowView.autoLayout();
             save_workflow();
+        });
+
+        $("#add-bucket-button").click(function (event) {
+            event.preventDefault();
+            openAddPaletteBucketMenuModal();
+        });
+
+        $("#pin-palette-button").click(function (event) {
+            event.preventDefault();
+            require('StudioApp').views.paletteView.pinPalette();
         });
         $("#zoom-in-button").click(function (event) {
             event.preventDefault();
@@ -285,7 +381,7 @@ define(
 
             save_workflow();
             closeCollapsedMenu();
-            
+
             var jobName = studioApp.models.jobModel.get("Name");
             var jobProjectName = studioApp.models.jobModel.get("Project");
             var jobDescription = studioApp.models.jobModel.get("Description");
@@ -306,7 +402,7 @@ define(
 
         $("#plan-button").click(function (event) {
             event.preventDefault();
-        
+
             var studioApp = require('StudioApp');
             if (!studioApp.isWorkflowOpen()) {
                 $('#select-workflow-modal').modal();
@@ -344,6 +440,8 @@ define(
                         var checkRadioValue = $(checkedRadio).val();
                         var inputName = $(checkedRadio).attr('name');
                         inputVariables[input.id] = {'Name': inputName, 'Value': checkRadioValue, 'Model': $(input).data("variable-model")};
+                    } else if ($(input).prop("tagName")==='TEXTAREA') {
+                        inputVariables[input.id] = {'Name': input.name, 'Value': input.value, 'Model': $(input).data("variable-model")};
                     }
                 }
                 readOrStoreVariablesInModel(inputVariables);
@@ -364,16 +462,16 @@ define(
                 } else {
                     $('#execute-workflow-modal').modal("hide");
                     if(!plan){
-                        submit();   
+                        submit();
                     }else{
                         $("#plan-workflow-modal").modal();
                     }
-                    
+
                 }
                 readOrStoreVariablesInModel(oldVariables);
             })
         }
-        
+
         function extractUpdatedVariables(inputVariables, validationData) {
             if (validationData.hasOwnProperty('updatedVariables')) {
                 var updatedVariables = validationData.updatedVariables;
@@ -385,7 +483,7 @@ define(
                         }
                     }
                 }
-            } 
+            }
             return inputVariables;
         }
 
@@ -397,7 +495,7 @@ define(
 
                 for (var i = 0; i < variables.length; i++) {
                     var variable = variables[i];
-                    if (!(!updatedVariables || updatedVariables === null)) {
+                    if (!(!updatedVariables || updatedVariables == null)) {
                         variables[i] = updatedVariables[variable.Name];
                     }
                     jobVariables[variable.Name] = variable;
@@ -423,7 +521,7 @@ define(
                             isInherited = variable.Inherited;
                         }
                         if (!isInherited) {
-                            if (!(!updatedVariables || updatedVariables === null)) {
+                            if (!(!updatedVariables || updatedVariables == null)) {
                                 variables[j] = updatedVariables[task.get('Task Name') + ":" + variable.Name];
                             }
                             jobVariables[task.get('Task Name') + ":" + variable.Name] = variable;
@@ -444,8 +542,7 @@ define(
         function submit() {
             var studioApp = require('StudioApp');
             var xml = studioApp.views.xmlView.generateXml();
-            var htmlVisualization = studioApp.views.xmlView.generateHtml();
-            StudioClient.submit(xml, htmlVisualization);
+            StudioClient.submit(xml);
         }
 
         function validate() {
@@ -454,7 +551,7 @@ define(
             return StudioClient.validate(xml, studioApp.models.jobModel);
         }
 
-        $("#clear-button").click(function (event) {
+        $("#clear-button, #clear-button-tool").click(function (event) {
             event.preventDefault();
 
             var studioApp = require('StudioApp');
@@ -469,8 +566,8 @@ define(
             studioApp.clear();
         });
 
-        $("#save-button").click(function (event) {
-            
+        $("#save-button, #save-button-tool").click(function (event) {
+
             event.preventDefault();
 
             var studioApp = require('StudioApp');
@@ -482,7 +579,7 @@ define(
             closeCollapsedMenu();
             save_workflow();
 
-            notify_message('Saved', 'Workflow has been saved', true);
+            StudioClient.alert('Saved', 'Workflow has been saved',  'success');
         });
 
         $("#close-button").click(function (event) {
@@ -498,24 +595,23 @@ define(
 
             closeCollapsedMenu();
         });
-        
-        
+
+
         $("#about-button").click(function (event) {
-                    
+
             event.preventDefault();
-            
-            
+
+
             jQuery.get('file.txt', function(data) {
-                   alert(data);
                    //process text file line by line
                    $('#div').html(data.replace('n',''));
             });
-            
-            
+
+
             var url = window.location.href;
             var arr = url.split("/");
             var result = arr[0] + "//" + arr[2] + "/rest";
-            
+
             $("#version").text( conf.studioVersion);
             $("#restServer").text( result );
             $("#restServer").attr("href", result);
@@ -523,7 +619,7 @@ define(
             $("#studioVersion").text( conf.studioVersion );
             $('#about-modal').modal('show');
             return;
-           
+
         });
 
         $("#download-xml-button").click(function (event) {
@@ -542,8 +638,13 @@ define(
 
         $("#confirm-add-from-catalog").click(function () {
             add_workflow_to_current(false);
-        });    
-        
+        });
+
+        $("#confirm-import-catalog-object-from-catalog").click(function () {
+            var studioApp = require('StudioApp');
+            studioApp.views.catalogGetView.importCatalogObject();
+        });
+
         function add_workflow_to_current(clearCurrentFirst){
             var studioApp = require('StudioApp');
 
@@ -582,82 +683,9 @@ define(
         }
 
         $("#confirm-publication-to-catalog").click(function () {
-            var headers = { 'sessionID': localStorage['pa.session'] };
-            var bucketName = ($(($("#catalog-publish-buckets-table .catalog-selected-row"))[0])).data("bucketname");
-            
             var studioApp = require('StudioApp');
-            var blob = new Blob([studioApp.views.xmlView.generateXml()], { type: "text/xml" });
-            var workflowName = studioApp.models.currentWorkflow.attributes.name;
-            
-            var payload = new FormData();
-            payload.append('file', blob);
-            payload.append('kind', 'workflow');
-            payload.append('name', workflowName);
-            payload.append('commitMessage', $("#catalog-publish-commit-message").val());
-            payload.append('objectContentType', "application/xml");
-            
-            var url = '/catalog/buckets/' + bucketName + '/resources';
-            var isRevision = ($("#catalog-publish-description").data("first") != true)
-           
-            if (isRevision){
-                url += "/" + workflowName + "/revisions"
-            }
-            
-            var postData = {
-                    url: url,
-                    type: 'POST',
-                    headers: headers,
-                    processData: false,
-                    contentType: false,
-                    cache: false,
-                    data: payload
-                };
-            
-            var workflowId = $("#catalog-publish-description").data("workflowid");            
-            if (workflowId){
-                postData.url = postData.url + "/" + workflowId + "/revisions";
-                payload.append('objectId', workflowId);
-            }
-            
-            var promise = $.ajax(postData).success(function (response) {
-                notify_message('Publish successful', 'The Workflow has been successfully published to the Catalog', true);
-
-                var urlOfRawObjectFromCatalog = '/catalog/buckets/' + bucketName + '/resources/' + workflowName + '/raw'
-                console.log('the url of published object to catalog:', urlOfRawObjectFromCatalog);
-
-                var studioApp = require('StudioApp');
-
-                getWorkflowFromCatalog(urlOfRawObjectFromCatalog, function (response) {
-                    studioApp.xmlToImport = new XMLSerializer().serializeToString(response);
-                    add_workflow_to_current(true);
-                    $('#catalog-publish-close-button').click();
-                });
-
-                return response;
-            }).error(function (response) {
-                notify_message('Error', 'Error publishing the Workflow to the Catalog', false);
-                return response;
-            });
-            
-            if (!isRevision){
-                $.when(promise).then(function () {
-                    var newWorkflow = promise.responseJSON;
-                    add_workflow_to_catalog_collection(newWorkflow.object[0]);
-                });
-            }
+            studioApp.views.catalogPublishView.publishToCatalog();
         })
-
-        function add_workflow_to_catalog_collection (newWorkflow) {
-            var studioApp = require('StudioApp');
-            // We manually add the newly published workflow into the right bucket
-            // without relying on Backbone's persistence layer
-            var workflows = studioApp.models.catalogBuckets.get(newWorkflow.bucket_name).get("workflows");
-            workflows[workflows.length] = {
-                id: newWorkflow.id,
-                name: newWorkflow.name,
-                bucket_name: newWorkflow.bucket_name
-            };
-        }
 
         // removing a task by del
         $('body').keyup(function (e) {
@@ -687,7 +715,6 @@ define(
                     studioApp.models.jobModel.get("Name"),
                     studioApp.views.xmlView.generateXml(),
                     {
-                        offsets: undoManager.getOffsetsFromDOM(),
                         project: studioApp.models.jobModel.get("Project"),
                         detailedView: studioApp.models.currentWorkflow.getMetadata()['detailedView']
                     }
@@ -703,7 +730,7 @@ define(
             }
         }
 
-        $("#validate-button").click(function (event) {
+        $('#validate-button, #validate-button-tool').click(function (event) {
             event.preventDefault();
 
             var studioApp = require('StudioApp');
@@ -718,7 +745,7 @@ define(
             validate_job(false);
         });
 
-        $("#undo-button").click(function (event) {
+        $("#undo-button, #undo-button-tool").click(function (event) {
             event.preventDefault();
 
             var studioApp = require('StudioApp');
@@ -730,7 +757,7 @@ define(
             undoManager.undo()
         });
 
-        $("#redo-button").click(function (event) {
+        $("#redo-button, #redo-button-tool").click(function (event) {
             event.preventDefault();
 
             var studioApp = require('StudioApp');
@@ -739,45 +766,45 @@ define(
                 return;
             }
             closeCollapsedMenu();
-            undoManager.redo()
+            undoManager.redo();
         });
 
-        $(document).on('focus', "*", function () {
-            undoManager._disable();
-        });
 
         $(document).on('focusout', function () {
             undoManager._enable();
-            undoManager.save();
         });
-        
-        function notify_message(title, text, typeSuccess){
-            PNotify.removeAll();
-            var type = typeSuccess ? 'success' : 'error';
-            new PNotify({
-                title: title,
-                text: text,
-                type: type,
-                text_escape: true,
-                buttons: {
-                    closer: true,
-                    sticker: false
-                },
-                addclass: 'translucent', // is defined in studio.css
-                width: '20%',
-                history: {
-                    history: false
-                }
-            });
-        }
+        $(window).on('hashchange', function(e){
+         undoManager._enable();
+         undoManager.save();
+        });
 
         (function scriptManagement() {
             $(document).on("click", '.edit-full-screen', function () {
 
                 $(".CodeMirror").remove();
-                var textarea = $(this).parents('form').find('textarea');
-                var select = $(this).parents('form').find('select');
-                var selectedLanguage = select.val()
+                var relatedInputId = $(this).data('related-input');
+                var isUrl = $(this).data('is-url');
+                var catalogKind = $(this).data('catalog-kind');
+                var inputValue = document.getElementById(relatedInputId).value;
+                var languageElementId;
+                if (isUrl) {
+                    languageElementId = relatedInputId.replace('_Url', '_Language');
+                    $("#cancel-script-changes").text("Close");
+                }
+                else {
+                    languageElementId = relatedInputId.replace('_Code', '_Language');
+                    $("#cancel-script-changes").text("Cancel");
+                }
+                var languageElement = document.getElementById(languageElementId);
+                var selectedLanguage = languageElement.options[languageElement.selectedIndex].value;
+                if (isUrl && (!selectedLanguage || selectedLanguage == '')) {
+                    var indexExt = inputValue.lastIndexOf('.');
+                    if (indexExt > -1) {
+                        var extension = inputValue.substring(indexExt+1, inputValue.length);
+                        selectedLanguage = config.extensions_to_languages[extension.toLowerCase()] || '';
+                    }
+                }
+                selectedLanguage = selectedLanguage.toLowerCase()
                 var modes = config.modes
                 var language = 'text/plain'
                 for (var property in modes) {
@@ -827,9 +854,51 @@ define(
                     scan(1);
                     return {list: list, from: CodeMirror.Pos(cur.line, start), to: CodeMirror.Pos(cur.line, end)};
                 });
-
-                var content = textarea.val();
-                $("#set-script-content").data("area", textarea);
+                var content = '';
+                var setScriptContentButton = $("#set-script-content");
+                var commitScriptChangesButton = $("#commit-script-changes");
+                if (isUrl) {
+                    if (inputValue.trim()!='') {
+                        var isCatalogScript = inputValue.startsWith(window.location.origin + '/catalog/');
+                        // Check if catalog object URL is relative (using ${PA_CATALOG_REST_URL})
+                        var isRelativeCatalogScript = inputValue.startsWith('${PA_CATALOG_REST_URL}');
+                        var headers = {};
+                        if (isCatalogScript || isRelativeCatalogScript) {
+                            headers = { 'sessionID': localStorage['pa.session'] };
+                        }
+                        // Replace ${PA_CATALOG_REST_URL} with an absolute URL.
+                        if (isRelativeCatalogScript){
+                            inputValue = inputValue.replace('${PA_CATALOG_REST_URL}',window.location.origin + '/catalog/');
+                        }
+                        $.ajax({
+                            url: inputValue,
+                            type: 'GET',
+                            headers: headers,
+                            async: false,
+                            dataType: 'text' //without this option, it will execute the response if it's JS code
+                        }).success(function (response) {
+                            content = response;
+                            setScriptContentButton.hide();
+                            commitScriptChangesButton.show();
+                        }).error(function (response) {
+                            StudioClient.alert('Error', 'The code could not be opened. Please check that you entered a correct URL.', 'error');
+                            console.error('Error importing the script from the Catalog : '+JSON.stringify(response));
+                            commitScriptChangesButton.hide();
+                            setScriptContentButton.hide();
+                        });
+                    } else {
+                        StudioClient.alert('No script to display.', 'There is no URL value. Please enter a URL in the input field.', 'error');
+                        return false;
+                    }
+                } else {
+                    content = inputValue;
+                    commitScriptChangesButton.hide();
+                    setScriptContentButton.show();
+                    $("#set-script-content").data("area", relatedInputId);
+                }
+                $("#full-edit-modal-script-content").data('language', selectedLanguage);
+                $("#full-edit-modal-script-content").data('catalog-kind', catalogKind);
+                $('#full-edit-modal-script-content').data("related-url-input", relatedInputId);
                 $("#full-edit-modal-script-content").val(content);
                 CodeMirror.commands.autocomplete = function(cm) {
                     cm.showHint({hint: CodeMirror.hint.anyword});
@@ -848,8 +917,8 @@ define(
                     "Shift-Ctrl-F": "replace",
                     "Shift-Cmd-F": "replace",
                     "Shift-Tab": "indentAuto",
-                    "Ctrl-]":"indentMore", "Cmd-]":"indentMore",
-                    "Ctrl-[":"indentLess", "Cmd-]":"indentLess",
+                    "Ctrl-]":"indentMore",
+                    "Ctrl-[":"indentLess",
                     "Ctrl-K Ctrl-1":"foldAll","Cmd-K Cmd-1":"foldAll"
                     },
                     foldGutter: true,
@@ -859,8 +928,14 @@ define(
                     keyMap: "sublime",
                     theme: "eclipse"
                 });
+                if ($(this).attr('data-catalog-kind') === 'Script/selection') {
+                    //Fixing modals overlay bug
+                    var zIndexModal = parseInt($(".selection-script-code-form").parents().find(".modal").css("z-index"));
+                    $("#full-edit-modal").css("z-index", (zIndexModal+1).toString());
+                }
+                $('#full-edit-modal').modal({backdrop: 'static', keyboard: false});
                 $('#full-edit-modal').modal('show');
-                $("#set-script-content").data("editor", editor);
+                $('#full-edit-modal').data("editor", editor);
 
                 var is_firefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
                 if (is_firefox) {
@@ -872,71 +947,141 @@ define(
 
                 return false;
             })
+
             $('#full-edit-modal').on('shown.bs.modal', function () {
                 $('#variable_reference_link').attr("href", config.docUrl + "/user/ProActiveUserGuide.html#_variables_quick_reference")
                 $(".CodeMirror").height($(".code-editor-container").height())
-                $("#set-script-content").data("editor").refresh()
+                $('#full-edit-modal').data("editor").refresh()
             })
 
             $("#set-script-content").click(function () {
-                var editor = $("#set-script-content").data("editor");
-                editor.save()
-                $(this).data("area").val($("#full-edit-modal-script-content").val());
+                var editor = $('#full-edit-modal').data("editor");
+                editor.save();
+                document.getElementById($(this).data("area")).value = $("#full-edit-modal-script-content").val();
 
                 var studioApp = require('StudioApp');
                 // propagating changes to the model
                 var form = studioApp.views.propertiesView.$el.data('form')
                 form.commit();
             })
+
+            $('#commit-script-changes').click(function () {
+                var textAreaEditor = $("#full-edit-modal-script-content");
+                var editorValue = $('#full-edit-modal').data("editor").getValue();
+                var language = textAreaEditor.data('language');
+                var catalogKind = textAreaEditor.data('catalog-kind');
+                var urlInputId = textAreaEditor.data('related-url-input');
+
+                //Fixing modals overlay bug
+                var zIndexModal = parseInt($("#full-edit-modal-script-content").parents().find(".modal").css("z-index"));
+                $("#catalog-publish-modal").css("z-index", (zIndexModal+1).toString());
+                $("#publish-current-confirmation-modal").css("z-index", (zIndexModal+2).toString());
+
+                var studioApp = require('StudioApp');
+                studioApp.views.catalogPublishView.setKind(catalogKind, "Script");
+                studioApp.views.catalogPublishView.setScriptLanguage(language);
+                studioApp.views.catalogPublishView.setContentToPublish(editorValue, "text/plain");
+                studioApp.views.catalogPublishView.setRelatedInputId(urlInputId, true);
+                studioApp.views.catalogPublishView.render();
+                $('#catalog-publish-modal').modal();
+            })
+
+            $(document).on("click", '.get-script-from-catalog', function (event) {
+                event.preventDefault();
+                var relatedInputId = $(this).attr('data-related-input');
+                var catalogKind = $(this).attr('data-catalog-kind');
+                if (catalogKind === 'Script/selection') {
+                    //Fixing modals overlay bug
+                    var zIndexModal = parseInt($(".selection-script-code-form").parents().find(".modal").css("z-index"));
+                    $("#catalog-get-modal").css("z-index", (zIndexModal+1).toString());
+                    $("#import-catalog-object-confirmation-modal").css("z-index", (zIndexModal+2).toString());
+                }
+                var studioApp = require('StudioApp');
+                studioApp.views.catalogGetView.setInputToImportId(relatedInputId);
+                studioApp.views.catalogGetView.setKind(catalogKind, "Script");
+                studioApp.views.catalogGetView.render();
+                $('#catalog-get-modal').modal();
+            })
+
+            $(document).on("click", '.publish-script-to-catalog', function (event) {
+                event.preventDefault();
+                var relatedInputId = $(this).attr('data-related-input');
+                var textAreaValue = document.getElementById(relatedInputId).value;
+                var languageElement = document.getElementById(relatedInputId.replace('_Code', '_Language'));
+                var language = languageElement.options[languageElement.selectedIndex].value.toLowerCase();
+                var catalogKind = $(this).attr('data-catalog-kind');
+                if (catalogKind === 'Script/selection') {
+                    //Fixing modals overlay bug
+                    var zIndexModal = parseInt($(".selection-script-code-form").parents().find(".modal").css("z-index"));
+                    $("#catalog-publish-modal").css("z-index", (zIndexModal+1).toString());
+                    $("#publish-current-confirmation-modal").css("z-index", (zIndexModal+2).toString());
+                }
+                var studioApp = require('StudioApp');
+                studioApp.views.catalogPublishView.setKind(catalogKind, "Script");
+                studioApp.views.catalogPublishView.setScriptLanguage(language);
+                studioApp.views.catalogPublishView.setContentToPublish(textAreaValue, "text/plain");
+                studioApp.views.catalogPublishView.setRelatedInputId(relatedInputId, false);
+                studioApp.views.catalogPublishView.render();
+                $('#catalog-publish-modal').modal();
+            })
+
         })();
 
         $(document).ready(function () {
-            
-            var result = "http://doc.activeeon.com/" ;
+            var copiedTasks = [];
+            var positions = [];
 
             $.getScript("studio-conf.js", function () {
                 console.log('conf:', conf);
-                if (conf.studioVersion.indexOf("SNAPSHOT") > -1){
-                    result = result + "dev";
-                }
-                else{
-                    result = result + conf.studioVersion;
-                }
-
-                $("#documentationLinkId").attr("href", result);
+                $("#documentationLinkId").attr("href", config.docUrl);
             });
 
-            
-            var ctrlDown = false;
-            var ctrlKey = 17, commandKey = 91, vKey = 86, cKey = 67, zKey = 90, yKey = 89;
-            var copied = false;
-            var pasteAllow = true;
 
-            $(document).keydown(function (e) {
+            var ctrlDown = false;
+            var ctrlKey = 17, commandKey = 91, vKey = 86, cKey = 67, zKey = 90, yKey = 89, aKey = 65;
+            var pasteAllow = true;
+            var canDoPast = false
+            $('#workflow-designer-outer').bind('keydown', function (e) {
                 if (e.keyCode == ctrlKey || e.keyCode == commandKey) ctrlDown = true;
             }).keyup(function (e) {
                 if (e.keyCode == ctrlKey || e.keyCode == commandKey) ctrlDown = false;
             });
 
-            $(document).keydown(function (e) {
+            $('#workflow-designer-outer').bind('keydown',function (e) {
                 if (ctrlDown && e.keyCode == cKey) {
+                   copiedTasks = [];
+                   positions = []
                     console.log("copy");
-                    copied = [];
                     $(".selected-task").each(function (i, t) {
-                        copied.push(t);
+                    positions.push({left: $(t).position().left, top: $(t).position().top})
+                        copiedTasks.push($(t).data( "view" ))
                     })
+                    // let the user how he can do past(ctr-v)
+                     StudioClient.alert('Copy/Paste', 'Click on the canvas where you want to paste and then do ctrl-V.', 'warning');
+
                 }
                 if (ctrlDown && e.keyCode == vKey) {
                     if (pasteAllow) {
-                        console.log("paste");
-                        require('StudioApp').views.workflowView.copyPasteTasks(copied, pasteAllow);
+                        var newTaskModel = []
+                        var tasksView = [];
+                         $.each(copiedTasks, function (i) {
+                            tasksView.push(copiedTasks[i]);
+                            newTaskModel.push(jQuery.extend(true, {}, copiedTasks[i].model));
+
+                        });
+                        require('StudioApp').views.workflowView.copyPasteTasks(pasteAllow,newTaskModel, tasksView, positions);
                     }
                 }
-                if (ctrlDown && e.keyCode == zKey) {
-                    undoManager.undoIfEnabled();
+                if ( (ctrlDown && e.keyCode == zKey)) {
+                    // copiedTasks.length number of the tasks that we added to the workflow
+                    undoManager.undoIfEnabled(positions.length);
                 }
                 if (ctrlDown && e.keyCode == yKey) {
                     undoManager.redoIfEnabled();
+                }
+                if(ctrlDown  && e.keyCode == aKey ){
+                       e.preventDefault();
+                       $(".task").addClass("selected-task");
                 }
             });
 

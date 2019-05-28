@@ -1,15 +1,14 @@
 define(
     [
         'dagre',
+        'proactive/rest/studio-client',
         'proactive/model/Job',
         'proactive/view/ViewWithProperties',
         'proactive/view/TaskView',
-        'proactive/view/utils/undo',
-        'pnotify',
-        'pnotify.buttons'
+        'proactive/view/utils/undo'
     ],
 
-    function (d, Job, ViewWithProperties, TaskView, undoManager, PNotify) {
+    function (d, StudioClient, Job, ViewWithProperties, TaskView, undoManager) {
 
     "use strict";
 
@@ -57,14 +56,10 @@ define(
                         templateUrl = elem.data("templateUrl");
                       else {
                         var templateName =  elem.data('templateName');
-                        var templateModel = that.options.app.models.templates.find(function(template) {return template.attributes.name == templateName});
-                        if (!templateModel) {
-                            var localStorageTemplates = JSON.parse(localStorage.getItem('secondaryBucketNames'));
-                            templateModel = that.options.app.models.secondaryTemplates[elem.data('bucketName')].find(function(template) {return template.attributes.name == templateName});
-                        }
-                        var bucket_name = templateModel.attributes.bucket_name;
-                        var workflow_name = templateModel.attributes.name;
-                        templateUrl = '/catalog/buckets/' + bucket_name + '/resources/'+workflow_name+'/raw';
+                        var templateModel = that.options.app.models.templates[elem.data('bucketName')].find(function(template) {return template.attributes.name == templateName});
+                        var bucketName = templateModel.attributes.bucket_name;
+                        var workflowName = templateModel.attributes.name;
+                        templateUrl = '/catalog/buckets/' + bucketName + '/resources/'+workflowName+'/raw';
                       }
                       $.ajax({
                           type: "GET",
@@ -77,7 +72,7 @@ define(
                           },
                           error: function (data) {
                               console.log("Cannot retrieve the template", data)
-                              that.alert("Cannot retrieve the template", "Name: " + elem.data("templateName") + ", url: " + elem.data("templateUrl"), 'error');
+                              StudioClient.alert("Cannot retrieve the template", "Name: " + elem.data("templateName") + ", url: " + elem.data("templateUrl"), 'error');
                           }
                       });
                 }
@@ -161,7 +156,8 @@ define(
             // showing target endpoints
             jsPlumb.bind('connectionDrag', function (connection) {
                 $('.task').each(function (i, task) {
-                    if ($(task).attr('id') != connection.sourceId) {
+                    // do not display the possible destination on the same element as the origin, except for the loop
+                    if (connection.scope == 'loop' || $(task).attr('id') != connection.sourceId) {
                         $(task).data('view').addTargetEndPoint(connection.scope);
                     }
                 })
@@ -204,24 +200,6 @@ define(
             });
 
         },
-        alert: function (caption, message, type) {
-            var text_escape = message.indexOf("<html>") == -1 ? true : false;
-
-            PNotify.removeAll();
-
-            new PNotify({
-                title: caption,
-                text: message,
-                type: type,
-                text_escape: text_escape,
-                opacity: .8,
-                width: '20%',
-                buttons: {
-                    closer: true,
-                    sticker: false
-                }
-            });
-        },
         createTask: function (ui) {
             console.log("Initializing TaskView")
             var view = new TaskView();
@@ -240,7 +218,7 @@ define(
             // Prevent having empty Workflow names. Nameless workflows do not affect the scheduler but cannot be removed from studio unless they get a name.
             if (!this.model.get("Name") || this.model.get("Name").trim() === "") {
                 this.model.set("Name", "");
-                this.alert('Workflow name is empty','Workflow Name should not be empty','error');
+                StudioClient.alert('Workflow name is empty','Workflow Name should not be empty','error');
                 jobNameInputField.css({ "border": "1px solid #D2322D"});
             }
             $("#breadcrumb-selected-job").text(this.model.get("Name"))
@@ -251,7 +229,6 @@ define(
             this.initJsPlumb()
         },
         addView: function (view, position) {
-
             var that = this;
             var rendering = view.render();
             this.workFlowDesigner.append(rendering.$el);
@@ -259,7 +236,9 @@ define(
 
             view.addSourceEndPoint('dependency')
 
-            jsPlumb.draggable(rendering.$el)
+            jsPlumb.draggable(rendering.$el);
+            // Prevent dragged tasks from hiding under the left panel
+            $(rendering.$el).draggable({containment:"#workflow-designer"});
             this.taskViews.push(view);
 
             rendering.$el.data("view", view);
@@ -388,23 +367,22 @@ define(
             jsPlumb.repaintEverything();
         },
         layoutNewElements: function (uiWithInitialOffset) {
-
             if (!uiWithInitialOffset) {
                 this.autoLayout()
                 return;
             }
 
             var app = this.options.app;
-            var workflow = app.models.currentWorkflow;
-            var offsets = workflow.getOffsets();
             var elemWithInitialOffset = $(uiWithInitialOffset.draggable);
 
             // finding task that are not layouted
             var nodes = [];
             $.each(this.model.tasks, function (i, task) {
                 var taskName = task.get("Task Name");
-                var offset = offsets[taskName];
-                if (!offset || (offset && offset.left==0 && offset.top==0)) {
+                var offset = {};
+                offset["top"] = task.get("PositionTop");
+                offset["left"] = task.get("PositionLeft");
+                if (!offset["left"] || !offset["top"] || offset["left"]===0 || offset["top"]===0) {
                     nodes.push({id: taskName, task: task, width: 78, height: 28});
                 }
             })
@@ -439,17 +417,19 @@ define(
             // computing layout with dagre
             dagre.layout().nodes(nodes).edges(edges).nodeSep(50).rankSep(100).run();
 
-            var leftOffset = uiWithInitialOffset.offset.left-(elemWithInitialOffset.width()/2)+50;
-            var topOffset = uiWithInitialOffset.offset.top-10;
+            // compute offsets relative to workflow-designer
+            var leftOffset = uiWithInitialOffset.offset.left-$('#workflow-designer').offset().left-(elemWithInitialOffset.width()/2)+50;
+            var topOffset = uiWithInitialOffset.offset.top-$('#workflow-designer').offset().top-10;
 
-            var offsets = workflow.getOffsets();
+            var job = app.models.jobModel
             $.each(nodes, function (i, node) {
                 var pos = {};
                 if (node.dagre.x) pos.left = node.dagre.x + leftOffset;
-                if (node.dagre.x) pos.top = node.dagre.y + topOffset;
-                offsets[node.dagre.id] = pos;
+                if (node.dagre.y) pos.top = node.dagre.y + topOffset;
+                var task = job.getTaskByName(node.dagre.id);
+                task.set('PositionTop', pos.top);
+                task.set('PositionLeft', pos.left);
             })
-            app.models.currentWorkflow.setOffsets(offsets);
             app.models.currentWorkflow.save({}, {wait: true});
         },
         restoreLayoutFromOffsets: function (offsets) {
@@ -464,7 +444,11 @@ define(
                     if (offset.left==0 && offset.top==0) {
                         autolayout = true;
                     }
-                    $(this).offset(offset)
+                    // compute absolute offsets
+					var new_offset = {};
+					new_offset.left = $('#workflow-designer').offset().left + offset.left;
+					new_offset.top = $('#workflow-designer').offset().top + offset.top;
+                    $(this).offset(new_offset);
                 } else {
                     autolayout = true;
                 }
@@ -480,14 +464,20 @@ define(
         },
         restoreLayout: function () {
             var app = this.options.app;
-            var workflow = app.models.currentWorkflow;
-            var offsets = workflow.getOffsets();
-
-            if (offsets) {
-                this.restoreLayoutFromOffsets(offsets);
-            } else {
-                this.autoLayout();
+            var job = app.models.jobModel;
+            var offsets = {};
+            for (var i = 0; i < job.tasks.length; i++) {
+                var name = job.tasks[i].get('Task Name');
+                var offset = {};
+                offset["top"] = job.tasks[i].get('PositionTop');
+                offset["left"] = job.tasks[i].get('PositionLeft');
+                if (!offset["top"] || !offset["left"] || offset["top"] === 0 || offset["left"] === 0) {
+                    this.autoLayout();
+                    return;
+                }
+                offsets[name] = offset;
             }
+            this.restoreLayoutFromOffsets(offsets);
         },
         zoom: 1,
         setZoom: function (zoom) {
@@ -518,7 +508,7 @@ define(
                 return (name === view.model.get("Task Name"));
             })
         },
-        copyPasteTasks: function (tasks, position) {
+        copyPasteTasks: function (position , newTaskModels, tasksView, tasksPosition) {
 
             // to avoid model change by creating connections clean all jsplumb events
             jsPlumb.unbind();
@@ -526,14 +516,19 @@ define(
             var thizz = this;
             var StudioApp = require('StudioApp');
             var jobModel = StudioApp.models.jobModel;
-
             var newTaskViews = {};
-            $.each(tasks, function (i, t) {
-                var task = $(t);
-                var taskView = task.data("view");
+            var minLeft = 0;
+            var minTop = 0;
+            function sort(arr, type){
+                return Array.prototype.slice.call(arr).sort(function(a,b){
+                    return a[type] - b[type];
+                })
+            }
+            minLeft = sort(tasksPosition, 'left')[0].left;
+            minTop = sort(tasksPosition, 'top')[0].top;
 
-                var newTaskModel = jQuery.extend(true, {}, taskView.model);
-
+            $.each(newTaskModels, function (i, newTaskModel) {
+                var taskView = tasksView[i];
                 // cloning of scripts in branches does not work properly
                 // do it manually here
                 if (newTaskModel.controlFlow) {
@@ -554,16 +549,27 @@ define(
                     suffix += 1;
                     newTaskName = newTaskModel.get("Task Name") + suffix
                 }
-
                 newTaskModel.set("Task Name", newTaskName)
                 jobModel.addTask(newTaskModel);
 
                 var newTaskView = new TaskView({model: newTaskModel});
+
                 if (!position.top) {
                     position = {top: taskView.$el.offset().top + 100, left: taskView.$el.offset().left + 100};
                 }
-                thizz.addView(newTaskView, position);
 
+               if(tasksPosition[i].left == minLeft){
+                   tasksPosition[i].left = position.left
+               } else if(minLeft){
+                   tasksPosition[i].left = tasksPosition[i].left - minLeft + position.left
+             }
+
+              if(tasksPosition[i].top == minTop){
+                   tasksPosition[i].top = position.top
+            } else if(minTop){
+               tasksPosition[i].top = tasksPosition[i].top - minTop + position.top
+               }
+                thizz.addView(newTaskView, {left: tasksPosition[i].left , top: tasksPosition[i].top  })
                 newTaskViews[taskView.model.get("Task Name")] = newTaskView;
             })
             // process dependencies

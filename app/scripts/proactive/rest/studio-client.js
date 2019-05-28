@@ -86,7 +86,6 @@ define(
                         // even id successful we are here
                         if (data.status == 200) {
                             that.alert("Connected", "Successfully connected user", 'success');
-                            console.log("Session ID is " + data.responseText)
                             localStorage['pa.session'] = data.responseText;
                             return onSuccess();
                         } else {
@@ -169,13 +168,13 @@ define(
 
             //customize client side, set localStorage['pa.login'] with server username for current session
             setCurrentUser : function () {
-                var that = this;
                 $.ajax({
                     type: 'GET',
                     url: config.restApiUrl + "/currentuser",
                     beforeSend: function(xhr) {
                         xhr.setRequestHeader('sessionid', localStorage['pa.session']);
                     },
+                    async: false,
                     success: function(data) {
                         //does not  return a json so even in case of success goes to error callback
                         console.log("Should not be here")
@@ -256,7 +255,7 @@ define(
                 return classes;
             },
 
-            submit: function(jobXml, visualization) {
+            submit: function(jobXml) {
                 if (!localStorage['pa.session']) return;
 
                 var that = this;
@@ -269,7 +268,6 @@ define(
                         that.alert("Cannot submit the job", result.errorMessage, 'error');
                     } else if (result.id) {
                         that.alert("Job submitted", "<html></html><a href='/scheduler' target='_blank'>'" + result.readableName + "' submitted successfully (Id " + result.id + ")</a></html>", 'success');
-                        that.setVisualization(result.id, visualization);
                     } else {
                         that.alert("Job submission", request.responseText, 'error');
                     }
@@ -355,7 +353,6 @@ define(
                 if (async) {
                     request.onreadystatechange = function() {
                         if (request.readyState == 4) {
-                            console.log("Response", request)
                             try {
                                 var result = JSON.parse(request.responseText)
                             } catch (err) {
@@ -379,27 +376,6 @@ define(
                         return;
                     }
                 }
-            },
-
-            setVisualization: function(jobId, visualization) {
-                var that = this;
-
-                $.ajax({
-                    url: config.restApiUrl + '/visualizations/' + jobId,
-                    data: {
-                        visualization: visualization
-                    },
-                    type: 'POST',
-                    beforeSend: function(xhr) {
-                        xhr.setRequestHeader('sessionid', localStorage['pa.session'])
-                    },
-                    success: function(data) {
-                        console.log("Success", data)
-                    },
-                    error: function(data) {
-                        console.log("Error", data);
-                    }
-                });
             },
 
             pausecomp: function(millis) {
